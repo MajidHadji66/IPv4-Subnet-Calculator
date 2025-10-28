@@ -12,21 +12,30 @@ const App: React.FC = () => {
 
   const isFormValid = () => {
     const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
-    const numValue = parseInt(value, 10);
-    return ipRegex.test(ipAddress) && !isNaN(numValue) && numValue > 0;
+    if (!ipRegex.test(ipAddress)) return false;
+
+    if (calculationMode === CalculationMode.MASK) {
+      // Basic validation for mask/CIDR. More thorough validation is in the service.
+      const cidrRegex = /^\/?(\d{1,2})$/;
+      const maskRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+      return cidrRegex.test(value) || maskRegex.test(value);
+    } else {
+      const numValue = parseInt(value, 10);
+      return !isNaN(numValue) && numValue > 0;
+    }
   };
 
   const handleSubmit = useCallback((e: React.FormEvent) => {
     e.preventDefault();
     if (!isFormValid()) {
-      setError("Please enter a valid IP address and a positive number for hosts/subnets.");
+      setError("Please enter a valid IP address and a valid value for the selected mode.");
       setResult(null);
       return;
     }
     try {
       setError(null);
-      const numValue = parseInt(value, 10);
-      const calcResult = calculateSubnetting(ipAddress, calculationMode, numValue);
+      const calcValue = calculationMode === CalculationMode.MASK ? value : parseInt(value, 10);
+      const calcResult = calculateSubnetting(ipAddress, calculationMode, calcValue);
       setResult(calcResult);
     } catch (err) {
       if (err instanceof Error) {
@@ -41,23 +50,44 @@ const App: React.FC = () => {
   const ModeSelector: React.FC = () => (
     <div className="flex bg-gray-700 rounded-lg p-1">
       <button
-        onClick={() => setCalculationMode(CalculationMode.SUBNETS)}
-        className={`w-1/2 py-2 px-4 text-sm font-medium rounded-md transition-colors duration-200 ${
+        onClick={() => { setCalculationMode(CalculationMode.SUBNETS); setValue('4'); }}
+        className={`w-1/3 py-2 px-4 text-sm font-medium rounded-md transition-colors duration-200 ${
           calculationMode === CalculationMode.SUBNETS ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-600'
         }`}
       >
-        Number of Subnets
+        Subnets
       </button>
       <button
-        onClick={() => setCalculationMode(CalculationMode.HOSTS)}
-        className={`w-1/2 py-2 px-4 text-sm font-medium rounded-md transition-colors duration-200 ${
+        onClick={() => { setCalculationMode(CalculationMode.HOSTS); setValue('14'); }}
+        className={`w-1/3 py-2 px-4 text-sm font-medium rounded-md transition-colors duration-200 ${
           calculationMode === CalculationMode.HOSTS ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-600'
         }`}
       >
-        Number of Hosts
+        Hosts
+      </button>
+      <button
+        onClick={() => { setCalculationMode(CalculationMode.MASK); setValue('/26'); }}
+        className={`w-1/3 py-2 px-4 text-sm font-medium rounded-md transition-colors duration-200 ${
+          calculationMode === CalculationMode.MASK ? 'bg-blue-600 text-white' : 'text-gray-300 hover:bg-gray-600'
+        }`}
+      >
+        Subnet Mask
       </button>
     </div>
   );
+  
+  const getLabel = () => {
+    switch (calculationMode) {
+      case CalculationMode.SUBNETS:
+        return 'Required Subnets';
+      case CalculationMode.HOSTS:
+        return 'Required Hosts per Subnet';
+      case CalculationMode.MASK:
+        return 'Subnet Mask / CIDR';
+      default:
+        return '';
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col items-center p-4 sm:p-6 lg:p-8 font-sans">
@@ -67,7 +97,7 @@ const App: React.FC = () => {
             IPv4 Subnet Calculator
           </h1>
           <p className="mt-2 text-lg text-gray-400">
-            Calculate subnets based on the number of hosts or networks you need.
+            Calculate subnets based on the number of hosts, networks, or a custom mask.
           </p>
         </header>
 
@@ -97,15 +127,16 @@ const App: React.FC = () => {
             
             <div>
               <label htmlFor="value" className="block text-sm font-medium text-gray-300 mb-2">
-                {calculationMode === CalculationMode.SUBNETS ? 'Required Subnets' : 'Required Hosts per Subnet'}
+                {getLabel()}
               </label>
               <input
-                type="number"
+                type={calculationMode === CalculationMode.MASK ? 'text' : 'number'}
                 id="value"
                 value={value}
                 onChange={(e) => setValue(e.target.value)}
                 className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
-                min="1"
+                min={calculationMode !== CalculationMode.MASK ? "1" : undefined}
+                placeholder={calculationMode === CalculationMode.MASK ? "e.g., 255.255.255.192 or /26" : ""}
               />
             </div>
             

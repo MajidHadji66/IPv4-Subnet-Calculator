@@ -1,6 +1,7 @@
 export enum CalculationMode {
   SUBNETS = 'subnets',
   HOSTS = 'hosts',
+  MASK = 'mask',
 }
 
 export interface Subnet {
