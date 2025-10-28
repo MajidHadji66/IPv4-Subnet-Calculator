@@ -91,7 +91,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col items-center p-4 sm:p-6 lg:p-8 font-sans">
-      <div className="w-full max-w-4xl mx-auto">
+      <div className="w-full max-w-4xl mx-auto flex-grow">
         <header className="text-center mb-8">
           <h1 className="text-4xl sm:text-5xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-teal-300">
             IPv4 Subnet Calculator
@@ -101,7 +101,7 @@ const App: React.FC = () => {
           </p>
         </header>
 
-        <main className="bg-gray-800 shadow-2xl rounded-xl p-6 sm:p-8">
+        <main className="bg-gray-800 shadow-2xl rounded-xl p-6 sm:p-8 mb-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div>
@@ -181,6 +181,9 @@ const App: React.FC = () => {
           )}
         </main>
       </div>
+      <footer className="w-full max-w-4xl mx-auto text-center py-6 text-gray-500 text-sm border-t border-gray-700">
+        <p>&copy; {new Date().getFullYear()} Majid hadji. All Rights Reserved.</p>
+      </footer>
     </div>
   );
 };
