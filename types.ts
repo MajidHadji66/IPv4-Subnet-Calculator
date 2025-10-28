@@ -17,4 +17,6 @@ export interface CalculationResult {
   totalSubnets: number;
   hostsPerSubnet: number;
   subnets: Subnet[];
+  ipClass: string;
+  defaultMask: string;
 }

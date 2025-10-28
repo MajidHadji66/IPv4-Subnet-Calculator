@@ -158,7 +158,15 @@ const App: React.FC = () => {
           {result && (
             <div className="mt-8 pt-6 border-t border-gray-700">
               <h2 className="text-2xl font-semibold text-center mb-6">Calculation Results</h2>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-center mb-6">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-center mb-6">
+                <div className="bg-gray-700 p-4 rounded-lg">
+                  <p className="text-sm text-gray-400">IP Class</p>
+                  <p className="font-mono text-lg">{result.ipClass}</p>
+                </div>
+                 <div className="bg-gray-700 p-4 rounded-lg">
+                  <p className="text-sm text-gray-400">Default Mask</p>
+                  <p className="font-mono text-lg">{result.defaultMask}</p>
+                </div>
                 <div className="bg-gray-700 p-4 rounded-lg">
                   <p className="text-sm text-gray-400">Subnet Mask</p>
                   <p className="font-mono text-lg">{result.subnetMask}</p>

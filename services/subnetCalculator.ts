@@ -88,6 +88,7 @@ export const calculateSubnetting = (ipAddress: string, mode: CalculationMode, va
   }
 
   const newMaskInt = (0xffffffffn << BigInt(32 - newCidr)) & 0xffffffffn;
+  const defaultMaskInt = (0xffffffffn << BigInt(32 - classInfo.defaultMaskBits)) & 0xffffffffn;
 
   const totalSubnets = 2 ** subnetBits;
   const hostsPerSubnet = (2 ** (32 - newCidr)) - 2;
@@ -115,6 +116,8 @@ export const calculateSubnetting = (ipAddress: string, mode: CalculationMode, va
   }
 
   return {
+    ipClass: classInfo.class,
+    defaultMask: bigIntToIp(defaultMaskInt),
     subnetMask: bigIntToIp(newMaskInt),
     cidr: newCidr,
     totalSubnets: totalSubnets,
