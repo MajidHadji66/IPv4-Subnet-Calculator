@@ -1,0 +1,5 @@
+{
+  "name": "IPv4 Subnet Calculator",
+  "description": "A simple and elegant web application to perform IPv4 subnet calculations. Users can input an IP address and specify either the required number of subnets or hosts to generate a detailed subnetting plan, including network addresses, usable host ranges, and broadcast addresses.",
+  "requestFramePermissions": []
+}
