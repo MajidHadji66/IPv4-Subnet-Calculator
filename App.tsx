@@ -2,6 +2,8 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { CalculationMode, CalculationResult } from './types';
 import ResultsTable from './components/ResultsTable';
 
+declare const XLSX: any;
+
 const workerScript = `
   const ipToBigInt = (ip) => {
     return ip.split('.').reduce((acc, octet) => (acc << 8n) + BigInt(parseInt(octet, 10)), 0n);
@@ -127,6 +129,21 @@ const workerScript = `
 `;
 
 // Helper functions for validation
+const validateIpFormat = (ip: string): string | null => {
+    const octets = ip.split('.');
+    if (octets.length !== 4) {
+        return "Invalid IPv4 format. Must have 4 octets separated by dots.";
+    }
+    for (const octet of octets) {
+        const num = parseInt(octet, 10);
+        // Disallow non-numeric, values not matching parsed int (e.g. "01"), or out of range
+        if (!/^\d+$/.test(octet) || String(num) !== octet || num < 0 || num > 255) {
+            return "Invalid IPv4 format. Octets must be numbers between 0 and 255 without leading zeros.";
+        }
+    }
+    return null;
+};
+
 const getIpClassInfo = (ip: string) => {
   const firstOctet = parseInt(ip.split('.')[0], 10);
   if (firstOctet >= 1 && firstOctet <= 126) return { class: 'A', defaultMaskBits: 8, hostBits: 24 };
@@ -143,22 +160,30 @@ const ipToBigInt = (ip: string): bigint => {
 const maskToCidr = (mask: string): number => {
     const maskInt = ipToBigInt(mask);
     const binaryString = maskInt.toString(2).padStart(32, '0');
-    if (binaryString.includes('01')) throw new Error("Invalid subnet mask");
+    if (binaryString.includes('01')) {
+      throw new Error(`Invalid subnet mask: ${mask}. Must have contiguous 1s followed by 0s.`);
+    }
     const cidr = binaryString.indexOf('0');
     return cidr === -1 ? 32 : cidr;
 };
 
 const parseMask = (maskValue: string): number => {
     let cleanMaskValue = maskValue.trim();
-    if (cleanMaskValue.startsWith('/')) cleanMaskValue = cleanMaskValue.substring(1);
+    if (cleanMaskValue.startsWith('/')) {
+      cleanMaskValue = cleanMaskValue.substring(1);
+    }
     if (!isNaN(parseInt(cleanMaskValue, 10)) && !cleanMaskValue.includes('.')) {
         const cidr = parseInt(cleanMaskValue, 10);
-        if (cidr < 0 || cidr > 32) throw new Error("Invalid CIDR");
+        if (cidr < 0 || cidr > 32) {
+            throw new Error(`Invalid CIDR value: /${cidr}. Must be between 0 and 32.`);
+        }
         return cidr;
     } else if (cleanMaskValue.includes('.')) {
+        const ipFormatError = validateIpFormat(cleanMaskValue);
+        if (ipFormatError) throw new Error(`Invalid subnet mask format: ${cleanMaskValue}.`);
         return maskToCidr(cleanMaskValue);
     }
-    throw new Error("Invalid mask format");
+    throw new Error(`Unrecognized mask format: ${maskValue}.`);
 };
 
 interface StandardCalculatorProps {
@@ -175,44 +200,55 @@ const StandardCalculator: React.FC<StandardCalculatorProps> = ({ onCalculate, lo
   useEffect(() => {
     const validate = () => {
       const newErrors: { ip?: string, val?: string } = {};
-      const ipRegex = /^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
       
-      if (!ipRegex.test(ipAddress)) {
-        newErrors.ip = "Invalid IPv4 address format.";
+      const ipFormatError = validateIpFormat(ipAddress);
+      if (ipFormatError) {
+        newErrors.ip = ipFormatError;
       } else {
-        const classInfo = getIpClassInfo(ipAddress);
-        if (classInfo.class === 'D' || classInfo.class === 'E') {
-          newErrors.ip = `Class ${classInfo.class} addresses are reserved and cannot be subnetted.`;
+        const firstOctet = parseInt(ipAddress.split('.')[0], 10);
+        if (firstOctet === 0) {
+            newErrors.ip = "Addresses starting with 0 are reserved and cannot be used.";
+        } else if (firstOctet === 127) {
+            newErrors.ip = "Loopback addresses (127.x.x.x) are not valid for subnetting.";
         } else {
-            try {
-                let subnetBits = 0;
-                const numValue = parseInt(value, 10);
+            const classInfo = getIpClassInfo(ipAddress);
+            if (classInfo.class === 'D' || classInfo.class === 'E') {
+              newErrors.ip = `Class ${classInfo.class} addresses are reserved and cannot be subnetted.`;
+            } else {
+                try {
+                    let subnetBits = 0;
+                    const numValue = parseInt(value, 10);
 
-                if (calculationMode === CalculationMode.SUBNETS) {
-                    if (isNaN(numValue) || numValue <= 0) newErrors.val = "Must be a positive number.";
-                    else subnetBits = Math.ceil(Math.log2(numValue));
-                } else if (calculationMode === CalculationMode.HOSTS) {
-                    if (isNaN(numValue) || numValue <= 0) newErrors.val = "Must be a positive number.";
-                    else {
-                        const requiredHostBits = Math.ceil(Math.log2(numValue + 2));
-                        if (requiredHostBits > classInfo.hostBits!) {
-                            newErrors.val = `Not enough host bits in Class ${classInfo.class} for ${value} hosts.`;
+                    if (calculationMode === CalculationMode.SUBNETS) {
+                        if (isNaN(numValue) || numValue <= 0) newErrors.val = "Must be a positive number.";
+                        else subnetBits = Math.ceil(Math.log2(numValue));
+                    } else if (calculationMode === CalculationMode.HOSTS) {
+                        if (isNaN(numValue) || numValue <= 0) newErrors.val = "Must be a positive number.";
+                        else {
+                            const requiredHostBits = Math.ceil(Math.log2(numValue + 2));
+                            if (requiredHostBits > classInfo.hostBits!) {
+                                newErrors.val = `Not enough host bits in Class ${classInfo.class} for ${value} hosts.`;
+                            }
+                            subnetBits = classInfo.hostBits! - requiredHostBits;
                         }
-                        subnetBits = classInfo.hostBits! - requiredHostBits;
+                    } else { // MASK
+                        const newCidr = parseMask(value);
+                        if (newCidr < classInfo.defaultMaskBits!) {
+                            newErrors.val = `Mask is smaller than default for Class ${classInfo.class}.`;
+                        }
+                        subnetBits = newCidr - classInfo.defaultMaskBits!;
                     }
-                } else { // MASK
-                    const newCidr = parseMask(value);
-                    if (newCidr < classInfo.defaultMaskBits!) {
-                        newErrors.val = `Mask is smaller than default for Class ${classInfo.class}.`;
-                    }
-                    subnetBits = newCidr - classInfo.defaultMaskBits!;
-                }
 
-                if (subnetBits > 16) {
-                    newErrors.val = "This generates over 100,000 subnets. Please select a smaller value.";
+                    if (subnetBits > 16) {
+                        newErrors.val = "This generates over 100,000 subnets. Please select a smaller value.";
+                    }
+                } catch (e) {
+                    if (e instanceof Error) {
+                        newErrors.val = e.message;
+                    } else {
+                        newErrors.val = "An unknown validation error occurred.";
+                    }
                 }
-            } catch (e) {
-                newErrors.val = "Invalid mask format. Use CIDR (e.g., /24) or dotted decimal.";
             }
         }
       }
@@ -310,6 +346,7 @@ const App: React.FC = () => {
   const [result, setResult] = useState<CalculationResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
+  const [originalIp, setOriginalIp] = useState<string>('');
   const workerRef = useRef<{ worker: Worker; url: string } | null>(null);
 
   useEffect(() => {
@@ -325,6 +362,7 @@ const App: React.FC = () => {
     setLoading(true);
     setError(null);
     setResult(null);
+    setOriginalIp(payload.ipAddress);
 
     if (workerRef.current) {
       workerRef.current.worker.terminate();
@@ -364,6 +402,55 @@ const App: React.FC = () => {
 
     worker.postMessage(payload);
   }, []);
+
+  const handleExportToExcel = useCallback(() => {
+    if (!result || !result.subnets || typeof XLSX === 'undefined' || !originalIp) return;
+
+    const summaryData = [
+      ["Calculation Summary", ""],
+      ["Original IP Address", originalIp],
+      ["IP Class", result.ipClass],
+      ["Default Mask", result.defaultMask],
+      ["Subnet Mask", result.subnetMask],
+      ["CIDR Notation", `/${result.cidr}`],
+      ["Total Subnets", result.totalSubnets],
+      ["Usable Hosts per Subnet", result.hostsPerSubnet],
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(summaryData);
+
+    const formattedSubnets = result.subnets.map(subnet => ({
+      'Subnet #': subnet.id,
+      'Network Address': subnet.networkAddress,
+      'Usable Host Range': subnet.usableHostRange,
+      'Broadcast Address': subnet.broadcastAddress,
+    }));
+
+    XLSX.utils.sheet_add_json(worksheet, formattedSubnets, {
+      origin: 'A10',
+      skipHeader: false,
+    });
+
+    const columnWidths = [
+      { wch: 25 }, 
+      { wch: 25 }, 
+      { wch: 35 }, 
+      { wch: 20 }, 
+    ];
+    worksheet['!cols'] = columnWidths;
+
+    if (worksheet['!merges']) {
+        worksheet['!merges'].push({ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } });
+    } else {
+        worksheet['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }];
+    }
+    
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Subnet Plan');
+    
+    const filename = `IPv4_Subnet_Plan_${originalIp.replace(/\./g, '_')}_${result.cidr}.xlsx`;
+    XLSX.writeFile(workbook, filename);
+  }, [result, originalIp]);
   
   return (
     <div className="min-h-screen bg-gray-900 text-gray-100 flex flex-col items-center p-4 sm:p-6 lg:p-8 font-sans">
@@ -388,7 +475,20 @@ const App: React.FC = () => {
 
           {result && (
             <div className="mt-8 pt-6 border-t border-gray-700">
-              <h2 className="text-2xl font-semibold text-center mb-6">Calculation Results</h2>
+              <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-semibold">Calculation Results</h2>
+                <button
+                  onClick={handleExportToExcel}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2 px-4 rounded-lg transition-colors duration-300 flex items-center gap-2 text-sm"
+                  aria-label="Export results to Excel"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L11 12.586V3a1 1 0 112 0v9.586l3.293-3.293a1 1 0 111.414 1.414l-5 5a1 1 0 01-1.414 0l-5-5a1 1 0 010-1.414z" clipRule="evenodd" />
+                  </svg>
+                  Export to Excel
+                </button>
+              </div>
+
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 text-center mb-6">
                 <div className="bg-gray-700 p-4 rounded-lg"><p className="text-sm text-gray-400">IP Class</p><p className="font-mono text-lg">{result.ipClass}</p></div>
                 <div className="bg-gray-700 p-4 rounded-lg"><p className="text-sm text-gray-400">Default Mask</p><p className="font-mono text-lg">{result.defaultMask}</p></div>
