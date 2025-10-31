@@ -4,6 +4,12 @@ export enum CalculationMode {
   MASK = 'mask',
 }
 
+export interface CalculationPayload {
+  calculationMode: CalculationMode;
+  ipAddress: string;
+  value: string | number;
+}
+
 export interface Subnet {
   id: number;
   networkAddress: string;
