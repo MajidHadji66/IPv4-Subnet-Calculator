@@ -84,16 +84,21 @@ const App: React.FC = () => {
 
     const worksheet = XLSX.utils.aoa_to_sheet(summaryData);
 
-    const formattedSubnets = result.subnets.map(subnet => ({
-      'Subnet #': subnet.id,
-      'Network Address': subnet.networkAddress,
-      'Usable Host Range': subnet.usableHostRange,
-      'Broadcast Address': subnet.broadcastAddress,
-    }));
+    const subnetTableData = [
+        ['Subnet', 'Network Address', 'Usable Host Range', 'Broadcast Address']
+    ];
 
-    XLSX.utils.sheet_add_json(worksheet, formattedSubnets, {
+    result.subnets.forEach(subnet => {
+        subnetTableData.push([
+            `Subnet ${subnet.id}`,
+            subnet.networkAddress,
+            subnet.usableHostRange,
+            subnet.broadcastAddress
+        ]);
+    });
+
+    XLSX.utils.sheet_add_aoa(worksheet, subnetTableData, {
       origin: 'A10',
-      skipHeader: false,
     });
 
     const columnWidths = [
