@@ -43,49 +43,65 @@ export const workerScript = `
     }
     throw new Error(\`Unrecognized mask format: \${maskValue}.\`);
   };
-  const calculateSubnetting = (ipAddress, mode, value) => {
+  const calculateSubnetting = (payload) => {
+    const { ipAddress, calculationMode } = payload;
     const classInfo = getIpClassInfo(ipAddress);
+
     if (classInfo.class === 'D' || classInfo.class === 'E') {
       throw new Error(\`IP address \${ipAddress} is in Class \${classInfo.class} and cannot be subnetted.\`);
     }
-    let subnetBits = 0;
+
     let newCidr = 0;
-    if (mode === 'subnets') {
-      if (typeof value !== 'number' || value <= 0) throw new Error("Number of subnets must be a positive number.");
-      subnetBits = Math.ceil(Math.log2(value));
-      newCidr = classInfo.defaultMaskBits + subnetBits;
-    } else if (mode === 'hosts') {
-      if (typeof value !== 'number' || value <= 0) throw new Error("Number of hosts must be a positive number.");
-      const requiredHostBits = Math.ceil(Math.log2(value + 2));
-      if (requiredHostBits > classInfo.hostBits) {
-        throw new Error(\`Not enough host bits in Class \${classInfo.class} for \${value} hosts.\`);
-      }
-      subnetBits = classInfo.hostBits - requiredHostBits;
-      newCidr = classInfo.defaultMaskBits + subnetBits;
+    let subnetBits = 0;
+
+    if (calculationMode === 'subnets') {
+        const requiredSubnets = payload.requiredSubnets || 1;
+        if (requiredSubnets <= 0) throw new Error("Number of subnets must be a positive number.");
+        subnetBits = Math.ceil(Math.log2(requiredSubnets));
+        newCidr = classInfo.defaultMaskBits + subnetBits;
+        if (32 - newCidr < 2) {
+             throw new Error(\`Not enough host bits to support \${requiredSubnets.toLocaleString()} subnets.\`);
+        }
+    } else if (calculationMode === 'hosts') {
+        const requiredHosts = payload.requiredHosts || 1;
+        if (requiredHosts <= 0) throw new Error("Number of hosts must be a positive number.");
+        const neededHostBits = Math.ceil(Math.log2(requiredHosts + 2));
+        newCidr = 32 - neededHostBits;
+        subnetBits = newCidr - classInfo.defaultMaskBits;
+        if (subnetBits < 0) {
+             throw new Error(\`A Class \${classInfo.class} network is not large enough to provide \${requiredHosts.toLocaleString()} hosts per subnet.\`);
+        }
     } else { // 'mask'
-      if (typeof value !== 'string') throw new Error("Subnet mask must be a string.");
-      newCidr = parseMask(value);
+      if (typeof payload.mask !== 'string') throw new Error("Subnet mask must be a string.");
+      newCidr = parseMask(payload.mask);
+
       if (newCidr < classInfo.defaultMaskBits) {
         throw new Error(\`Provided mask /\${newCidr} is smaller than the default mask /\${classInfo.defaultMaskBits} for a Class \${classInfo.class} address.\`);
       }
       subnetBits = newCidr - classInfo.defaultMaskBits;
     }
+
     if (newCidr > 32) {
       throw new Error('The resulting CIDR mask cannot be larger than /32.');
     }
     if (subnetBits > 16) {
-      throw new Error(\`This calculation would generate over 100,000 subnets (\${(2 ** subnetBits).toLocaleString()}), which is too large for this tool.\`);
+      throw new Error(\`This calculation would generate over 100,000 subnets (\${(Math.pow(2, subnetBits)).toLocaleString()}), which is too large for this tool.\`);
     }
+
     const newMaskInt = (0xffffffffn << BigInt(32 - newCidr)) & 0xffffffffn;
     const defaultMaskInt = (0xffffffffn << BigInt(32 - classInfo.defaultMaskBits)) & 0xffffffffn;
-    const totalSubnets = 2 ** subnetBits;
-    const hostsPerSubnet = (2 ** (32 - newCidr)) - 2;
+    const totalSubnets = Math.pow(2, subnetBits);
+    const hostsPerSubnet = Math.pow(2, 32 - newCidr) - 2;
     const ipInt = ipToBigInt(ipAddress);
     const originalMaskInt = (0xffffffffn << BigInt(32 - classInfo.defaultMaskBits)) & 0xffffffffn;
     const baseNetworkAddressInt = ipInt & originalMaskInt;
     const subnets = [];
     const increment = 1n << BigInt(32 - newCidr);
-    for (let i = 0; i < totalSubnets; i++) {
+    
+    // Limit loop to prevent browser freeze for very large subnet counts
+    const loopLimit = Math.min(totalSubnets, 65536);
+
+    for (let i = 0; i < loopLimit; i++) {
       const currentSubnetInt = baseNetworkAddressInt + (BigInt(i) * increment);
       const broadcastAddressInt = currentSubnetInt + increment - 1n;
       const startHost = currentSubnetInt + 1n;
@@ -97,6 +113,7 @@ export const workerScript = `
         broadcastAddress: bigIntToIp(broadcastAddressInt),
       });
     }
+
     return {
       ipClass: classInfo.class,
       defaultMask: bigIntToIp(defaultMaskInt),
@@ -108,10 +125,120 @@ export const workerScript = `
     };
   };
 
+  const calculateVlsm = (baseIp, baseCidr, requestedSubnets) => {
+    if (requestedSubnets.length === 0) {
+      throw new Error("Please add at least one subnet group to calculate.");
+    }
+
+    const flattenedSubnets = [];
+    requestedSubnets.forEach(group => {
+      const count = Number(group.count);
+      if (isNaN(count) || count <= 0) {
+        throw new Error(\`Invalid number of subnets for group '\${group.name}'. Must be a positive number.\`);
+      }
+      for (let i = 0; i < count; i++) {
+        flattenedSubnets.push({
+          id: \`\${group.id}-\${i}\`,
+          name: count > 1 ? \`\${group.name} \${i + 1}\` : group.name,
+          hosts: group.hosts,
+        });
+      }
+    });
+
+    if (flattenedSubnets.length === 0) {
+      throw new Error("Please specify at least one subnet to calculate.");
+    }
+
+    const baseIpInt = ipToBigInt(baseIp);
+    const baseMaskInt = (0xffffffffn << BigInt(32 - baseCidr)) & 0xffffffffn;
+    const baseNetworkAddressInt = baseIpInt & baseMaskInt;
+
+    if (baseNetworkAddressInt !== ipToBigInt(baseIp)) {
+        throw new Error(\`The provided IP address (\${baseIp}) is a host address, not a network address for the /\${baseCidr} block. Please use \${bigIntToIp(baseNetworkAddressInt)}.\`);
+    }
+
+    const totalHostsInBlock = Math.pow(2, 32 - baseCidr);
+
+    const subnetsToAllocate = flattenedSubnets.map(s => {
+      const requiredHosts = Number(s.hosts);
+      if (isNaN(requiredHosts) || requiredHosts <= 0) {
+        throw new Error(\`Invalid number of hosts for subnet '\${s.name}'. Must be a positive number.\`);
+      }
+      const hostBits = Math.ceil(Math.log2(requiredHosts + 2));
+      const subnetCidr = 32 - hostBits;
+      const allocatedHosts = Math.pow(2, hostBits) - 2;
+      return { ...s, requiredHosts, hostBits, subnetCidr, allocatedHosts };
+    }).sort((a, b) => b.hostBits - a.hostBits);
+
+    const totalRequiredHosts = subnetsToAllocate.reduce((sum, s) => sum + s.requiredHosts, 0);
+    const totalAllocatedHosts = subnetsToAllocate.reduce((sum, s) => sum + s.allocatedHosts, 0);
+
+    let currentAddressInt = baseNetworkAddressInt;
+    const allocatedSubnets = [];
+    const broadcastAddressOfBaseNetworkInt = baseNetworkAddressInt + (1n << BigInt(32 - baseCidr)) - 1n;
+
+    for (const subnet of subnetsToAllocate) {
+      const subnetSize = 1n << BigInt(subnet.hostBits);
+      if (currentAddressInt + subnetSize > broadcastAddressOfBaseNetworkInt + 1n) {
+        throw new Error(\`Not enough address space in the network \${baseIp}/\${baseCidr} to fit all requested subnets.\`);
+      }
+
+      const networkAddressInt = currentAddressInt;
+      const broadcastAddressInt = networkAddressInt + subnetSize - 1n;
+      const maskInt = (0xffffffffn << BigInt(subnet.hostBits)) & 0xffffffffn;
+      const startHost = networkAddressInt + 1n;
+      const endHost = broadcastAddressInt - 1n;
+
+      allocatedSubnets.push({
+        id: subnet.id,
+        name: subnet.name,
+        requiredHosts: subnet.requiredHosts,
+        allocatedHosts: subnet.allocatedHosts,
+        networkAddress: bigIntToIp(networkAddressInt),
+        cidr: subnet.subnetCidr,
+        subnetMask: bigIntToIp(maskInt),
+        usableHostRange: startHost > endHost ? 'N/A' : \`\${bigIntToIp(startHost)} - \${bigIntToIp(endHost)}\`,
+        broadcastAddress: bigIntToIp(broadcastAddressInt),
+      });
+
+      currentAddressInt += subnetSize;
+    }
+
+    const unallocatedRanges = [];
+    if (currentAddressInt <= broadcastAddressOfBaseNetworkInt) {
+        const remainingSize = broadcastAddressOfBaseNetworkInt - currentAddressInt + 1n;
+        if (remainingSize > 0) {
+            unallocatedRanges.push({
+                networkAddress: bigIntToIp(currentAddressInt),
+                size: remainingSize.toString(),
+                usableHostRange: \`\${bigIntToIp(currentAddressInt)} - \${bigIntToIp(broadcastAddressOfBaseNetworkInt)}\`
+            });
+        }
+    }
+
+    return {
+      baseNetwork: \`\${baseIp}/\${baseCidr}\`,
+      totalHostsInBlock,
+      totalRequiredHosts,
+      totalAllocatedHosts,
+      allocatedSubnets,
+      unallocatedRanges,
+      efficiency: totalAllocatedHosts > 0 ? (totalRequiredHosts / totalAllocatedHosts) * 100 : 0,
+    };
+  };
+
   self.onmessage = (e) => {
     try {
-      const { ipAddress, calculationMode, value } = e.data;
-      const result = calculateSubnetting(ipAddress, calculationMode, value);
+      const { calculator, payload } = e.data;
+      let result;
+      if (calculator === 'standard') {
+        result = calculateSubnetting(payload);
+      } else if (calculator === 'vlsm') {
+        const { ipAddress, cidr, subnets } = payload;
+        result = calculateVlsm(ipAddress, cidr, subnets);
+      } else {
+         throw new Error('Unknown calculator type');
+      }
       self.postMessage({ result });
     } catch (err) {
       if (err instanceof Error) {
